@@ -1,6 +1,8 @@
 package org.realcpf.act;
 
 
+import org.realcpf.bytesutil.ByteFinder;
+import org.realcpf.struct.Tuple;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,12 +27,16 @@ public final class FileStoreAct implements AutoCloseable {
     tool.close();
   }
 
+  public int putTuple(Tuple<String, String> tuple) {
+    return this.tool.putTuple(tuple);
+  }
 
   private static class MateKey {
-    public MateKey(long start,long len){
+    public MateKey(long start, long len) {
       this.start = start;
       this.len = len;
     }
+
     long start;
     long len;
   }
@@ -41,15 +47,16 @@ public final class FileStoreAct implements AutoCloseable {
     private FileChannel dataFileChannel;
     private MappedByteBuffer keyFileMapped;
     private MappedByteBuffer dataFileMapped;
-    private final byte FIND_NULL = (byte) 0x00;
+    private final byte FIND_NULL = (byte) 0x0000;
     private final byte FIND_FIELD_SPLIT = (byte) ';';
+    private final byte FIND_KEY_SPLIT = (byte) ':';
 
     private static Map<String, MateKey> map;
 
     private FileChannelTool() {
 
       try {
-        Path basePath = Path.of("");
+        Path basePath = Path.of(System.getenv("DATA_PATH"), "db");
 
         Path kPath = basePath.resolve("db.key");
         Path dPath = basePath.resolve("db.data");
@@ -64,7 +71,7 @@ public final class FileStoreAct implements AutoCloseable {
 
         firstLoad();
       } catch (IOException e) {
-        LOGGER.error("error when <init> FileStoreAct",e);
+        LOGGER.error("error when <init> FileStoreAct", e);
       }
     }
 
@@ -72,42 +79,49 @@ public final class FileStoreAct implements AutoCloseable {
       map = new HashMap<>();
       int index;
       int last = 0;
-      int end = -1;
 
-      while (keyFileMapped.hasRemaining()){
-        if (keyFileMapped.get() == FIND_NULL) {
-          end = keyFileMapped.position();
-        }
+
+      ByteFinder finder = new ByteFinder(keyFileMapped, FIND_FIELD_SPLIT);
+      int tmp = -1;
+      int end = 0;
+      while ((tmp = finder.nextIndex()) != -1) {
+        end = tmp;
       }
-      if (end == -1) {
+      if (end < 1) {
         return;
       }
+      int ki = end;
       keyFileMapped.position(0);
-      ByteBuffer buffer = keyFileMapped.slice(0,end);
+      ByteBuffer buffer = keyFileMapped.slice(0, end + 1);
+      ByteFinder fieldFinder = new ByteFinder(buffer, FIND_FIELD_SPLIT);
+      fieldFinder.restart();
       for (; ; ) {
-        index =-1;
-        while (buffer.hasRemaining()) {
-          if (buffer.get() == FIND_FIELD_SPLIT) {
-            index = buffer.position();
-          }
-        }
+        index = fieldFinder.nextIndex();
         if (index < 0) {
           break;
         }
-        String line = buffer.slice(last,index).toString();
-        String[] lines = line.split(":");
-        long start = Long.parseLong(lines[0]);
-        long len = Long.parseLong(lines[1]);
-        String keyName = lines[2];
-        LOGGER.info("load key from file {}",keyName);
+
+        ByteBuffer line = buffer.slice(last, index + 1);
+        long start = line.getLong();
+        line.get();
+        long len = line.getLong();
+        line.get();
+
+        ByteBuffer keyBuffer = line.slice(line.position(), line.remaining());
+        byte[] bbs = new byte[keyBuffer.remaining()];
+        keyBuffer.get(bbs);
+        String keyName = new String(bbs);
         map.put(keyName,new MateKey(start,len));
-//        byteBuf.readByte();
+        LOGGER.info("load key from file {}", keyName);
+        map.put(keyName, new MateKey(start, len));
+        buffer.get();
         last = index + 1;
       }
-//      int di = dataByteBuf.forEachByte(ByteProcessor.FIND_NUL);
-//      dataByteBuf.writerIndex(di == -1 ? 0 : di);
-//      int ki = keyByteBuf.forEachByte(ByteProcessor.FIND_NUL);
-//      keyByteBuf.writerIndex(ki == -1 ? 0 : ki);
+
+      ByteFinder dataFinder = new ByteFinder(dataFileMapped, FIND_NULL);
+      int di = dataFinder.nextIndex();
+      dataFileMapped.position(di);
+      keyFileMapped.position(di);
     }
 
     private static final FileStoreAct act = new FileStoreAct();
@@ -118,6 +132,28 @@ public final class FileStoreAct implements AutoCloseable {
       this.dataFileChannel.close();
 
     }
+
+    private int putTuple(Tuple<String, String> tuple) {
+      String key = tuple.getKey();
+      String value = tuple.getValue();
+      byte[] keys = key.getBytes(StandardCharsets.UTF_8);
+      byte[] values = value.getBytes(StandardCharsets.UTF_8);
+      // index:length:key-bytes
+      int nowIndex = dataFileMapped.position();
+      int writeIndex = nowIndex + values.length;
+      int bodyLen = values.length;
+      synchronized (FileChannelTool.class) {
+        keyFileMapped.putLong(writeIndex);
+        keyFileMapped.put(FIND_KEY_SPLIT);
+        keyFileMapped.putLong(bodyLen);
+        keyFileMapped.put(FIND_KEY_SPLIT);
+        keyFileMapped.put(keys);
+        keyFileMapped.put(FIND_FIELD_SPLIT);
+        dataFileMapped.put(values);
+      }
+      return 1;
+    }
+
 
   }
 
