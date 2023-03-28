@@ -30,6 +30,9 @@ public final class FileStoreAct implements AutoCloseable {
   public int putTuple(Tuple<String, String> tuple) {
     return this.tool.putTuple(tuple);
   }
+  public String getTuple(String key){
+    return this.tool.getTuple(key);
+  }
 
   private static class MateKey {
     public MateKey(long start, long len) {
@@ -107,13 +110,13 @@ public final class FileStoreAct implements AutoCloseable {
         long len = line.getLong();
         line.get();
 
-        ByteBuffer keyBuffer = line.slice(line.position(), line.remaining());
+        ByteBuffer keyBuffer = line.slice(line.position(), line.remaining()-1);
+        line.get();
         byte[] bbs = new byte[keyBuffer.remaining()];
         keyBuffer.get(bbs);
         String keyName = new String(bbs);
         map.put(keyName,new MateKey(start,len));
         LOGGER.info("load key from file {}", keyName);
-        map.put(keyName, new MateKey(start, len));
         buffer.get();
         last = index + 1;
       }
@@ -121,7 +124,7 @@ public final class FileStoreAct implements AutoCloseable {
       ByteFinder dataFinder = new ByteFinder(dataFileMapped, FIND_NULL);
       int di = dataFinder.nextIndex();
       dataFileMapped.position(di);
-      keyFileMapped.position(di);
+      keyFileMapped.position(ki);
     }
 
     private static final FileStoreAct act = new FileStoreAct();
@@ -132,18 +135,32 @@ public final class FileStoreAct implements AutoCloseable {
       this.dataFileChannel.close();
 
     }
+    private String getTuple(String key){
+      if (map.containsKey(key)) {
+        MateKey mateKey = map.get(key);
+        synchronized (FileChannelTool.class){
+          int start = (int)mateKey.start;
+          int len = (int)mateKey.len;
+          byte[] value = new byte[len];
+          dataFileMapped.get(start,value);
+          return new String(value);
+        }
+      }
+      return null;
+    }
 
     private int putTuple(Tuple<String, String> tuple) {
       String key = tuple.getKey();
       String value = tuple.getValue();
       byte[] keys = key.getBytes(StandardCharsets.UTF_8);
       byte[] values = value.getBytes(StandardCharsets.UTF_8);
+
       // index:length:key-bytes
       int nowIndex = dataFileMapped.position();
-      int writeIndex = nowIndex + values.length;
       int bodyLen = values.length;
+      map.put(key,new MateKey(nowIndex,bodyLen));
       synchronized (FileChannelTool.class) {
-        keyFileMapped.putLong(writeIndex);
+        keyFileMapped.putLong(nowIndex);
         keyFileMapped.put(FIND_KEY_SPLIT);
         keyFileMapped.putLong(bodyLen);
         keyFileMapped.put(FIND_KEY_SPLIT);

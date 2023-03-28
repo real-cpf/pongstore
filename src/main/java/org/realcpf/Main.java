@@ -9,6 +9,7 @@ public class Main {
     FileStoreAct act = FileStoreAct.getInstance();
     Tuple<String,String> hello = new Tuple<>("hello","world");
 //    act.putTuple(hello);
+    System.out.println(act.getTuple(hello.getKey()));
     try {
       act.close();
     } catch (Exception e) {
